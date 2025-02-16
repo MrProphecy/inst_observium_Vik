@@ -3,7 +3,7 @@
 # install_observium.sh
 #
 # Script para instalar Observium Community Edition en Rocky Linux
-# usando el paquete oficial .tar.gz, sin depender del repositorio Git.
+# usando el paquete oficial .tar.gz (sin usar git clone).
 #
 # Ejecución:
 #   chmod +x install_observium.sh
@@ -21,10 +21,11 @@ OBS_DB_PASS="MiPasswordObservium"      # Contraseña del usuario de la base de d
 OBS_ADMIN_USER="admin"                 # Usuario admin para Observium
 OBS_ADMIN_PASS="MiPasswordAdmin"       # Contraseña admin para Observium
 
-SERVER_NAME="observium.local"          # Host o dominio. Ej: observium.ejemplo.com
+SERVER_NAME="observium.local"          # Host o dominio. Ej: observium.miempresa.com
 INSTALL_DIR="/opt/observium"           # Carpeta donde instalaremos Observium
 PHP_TIMEZONE="Europe/Madrid"           # Ajustar a tu zona horaria
 
+# URL oficial del tarball de Observium Community
 OBS_TGZ_URL="http://www.observium.org/observium-community-latest.tar.gz"
 
 # ========================
@@ -46,8 +47,7 @@ systemctl enable --now httpd mariadb crond
 #    2) CONFIGURAR MYSQL
 # ========================
 echo "2) Configurando MariaDB..."
-# A) Opcional: Automatizar mysql_secure_installation con 'expect'.
-#    Solo si quieres forzar la contraseña root y eliminar users de prueba.
+
 if ! mysql -u root -p"$DB_ROOT_PASS" -e "status" &>/dev/null; then
   echo "Intentando establecer contraseña root de MariaDB..."
   dnf -y install expect || true
@@ -78,7 +78,6 @@ expect eof
   echo "$SECURE_MYSQL"
 fi
 
-# B) Crear la base de datos y usuario de Observium
 echo "Creando base de datos [$OBS_DB_NAME] y usuario [$OBS_DB_USER]..."
 mysql -u root -p"$DB_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS $OBS_DB_NAME CHARACTER SET utf8 COLLATE utf8_general_ci;"
 mysql -u root -p"$DB_ROOT_PASS" -e "CREATE USER IF NOT EXISTS '$OBS_DB_USER'@'localhost' IDENTIFIED BY '$OBS_DB_PASS';"
@@ -88,20 +87,17 @@ mysql -u root -p"$DB_ROOT_PASS" -e "FLUSH PRIVILEGES;"
 # ========================
 #   3) DESCARGAR OBSERVIUM
 # ========================
-echo "3) Descargando Observium Community .tar.gz..."
+echo "3) Descargando Observium Community .tar.gz en $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR"
 cd /opt
 
-# Bajamos el tar y extraemos
 wget -O observium-latest.tar.gz "$OBS_TGZ_URL"
 tar xvfz observium-latest.tar.gz
 
-# Normalmente se extrae en "observium" o "observium-community"; ajustamos si es distinto
-# Si ya trae la carpeta "observium", podemos renombrarla:
+# Normalmente se extrae en "observium" o "observium-community"
 if [ -d "observium" ]; then
   mv observium "$INSTALL_DIR"
 else
-  # Si la carpeta se llama "observium-community", etc.
   mv observium-community "$INSTALL_DIR" 2>/dev/null || true
 fi
 
@@ -113,7 +109,6 @@ cd "$INSTALL_DIR"
 echo "Copiando config.php y editando..."
 cp config.php.default config.php
 
-# Editamos las líneas de la DB en config.php
 sed -i "s|\$config\['db_host'\] = 'localhost';|\$config['db_host'] = 'localhost';|g" config.php
 sed -i "s|\$config\['db_user'\] = 'observium';|\$config['db_user'] = '$OBS_DB_USER';|g" config.php
 sed -i "s|\$config\['db_pass'\] = 'observium';|\$config['db_pass'] = '$OBS_DB_PASS';|g" config.php
