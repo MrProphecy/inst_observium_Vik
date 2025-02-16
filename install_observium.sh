@@ -2,57 +2,62 @@
 #
 # install_observium.sh
 #
-# Script para instalar Observium Community Edition en Rocky Linux (8/9).
-# Requiere ejecución como root o sudo.
-# Ejemplo de uso:
+# Script para instalar Observium Community Edition en Rocky Linux
+# usando el paquete oficial .tar.gz, sin depender del repositorio Git.
+#
+# Ejecución:
 #   chmod +x install_observium.sh
 #   ./install_observium.sh
 #
 
-# ==================================================
-#  CONFIGURACIÓN (puedes cambiar estas variables)
-# ==================================================
-DB_ROOT_PASS="MiPasswordRootSQL"       # Contraseña root de MariaDB (si no existe, la estableceremos)
+# ========================
+#    CONFIGURACIÓN
+# ========================
+DB_ROOT_PASS="MiPasswordRootSQL"       # Contraseña root de MariaDB (si no está configurada, la establecemos).
 OBS_DB_NAME="observium"                # Nombre de la base de datos para Observium
 OBS_DB_USER="observium"                # Usuario de la base de datos
 OBS_DB_PASS="MiPasswordObservium"      # Contraseña del usuario de la base de datos
-OBS_ADMIN_USER="admin"                 # Nombre de usuario admin en Observium
-OBS_ADMIN_PASS="MiPasswordAdmin"       # Contraseña para el usuario admin de Observium
-SERVER_NAME="observium.local"          # Nombre de host o dominio
-INSTALL_DIR="/opt/observium"           # Directorio donde se clonará Observium
-PHP_TIMEZONE="Europe/Madrid"           # Ajustar a tu zona horaria (ej: America/Bogota, Europe/Madrid, etc.)
 
-# ==================================================
-#    1. PREPARACIÓN DEL SISTEMA
-# ==================================================
-set -e  # Si ocurre un error, el script se detendrá
-echo "Actualizando el sistema..."
+OBS_ADMIN_USER="admin"                 # Usuario admin para Observium
+OBS_ADMIN_PASS="MiPasswordAdmin"       # Contraseña admin para Observium
+
+SERVER_NAME="observium.local"          # Host o dominio. Ej: observium.ejemplo.com
+INSTALL_DIR="/opt/observium"           # Carpeta donde instalaremos Observium
+PHP_TIMEZONE="Europe/Madrid"           # Ajustar a tu zona horaria
+
+OBS_TGZ_URL="http://www.observium.org/observium-community-latest.tar.gz"
+
+# ========================
+#     1) PREPARAR SO
+# ========================
+echo "1) Actualizando el sistema y paquetes base..."
 dnf -y update
 
-echo "Instalando paquetes básicos (EPEL, Apache, PHP, MariaDB, SNMP, etc.)..."
+echo "Instalando dependencias (Apache, PHP, MariaDB, SNMP, etc.)..."
 dnf -y install epel-release
 dnf -y install httpd mariadb mariadb-server net-snmp net-snmp-utils \
                php php-cli php-mysqlnd php-gd php-xml php-snmp php-json \
-               php-zip php-common php-mbstring ImageMagick rrdtool git fping unzip cronie
+               php-zip php-common php-mbstring ImageMagick rrdtool fping \
+               unzip cronie wget
 
 systemctl enable --now httpd mariadb crond
 
-# ==================================================
-#    2. CONFIGURAR MARIADB
-# ==================================================
-echo "Configurando MariaDB..."
+# ========================
+#    2) CONFIGURAR MYSQL
+# ========================
+echo "2) Configurando MariaDB..."
+# A) Opcional: Automatizar mysql_secure_installation con 'expect'.
+#    Solo si quieres forzar la contraseña root y eliminar users de prueba.
+if ! mysql -u root -p"$DB_ROOT_PASS" -e "status" &>/dev/null; then
+  echo "Intentando establecer contraseña root de MariaDB..."
+  dnf -y install expect || true
 
-# A) Establecer contraseña root de MariaDB (si no está puesta).
-#    Usamos 'expect' para automatizar mysql_secure_installation (opcional).
-if [ -x "$(command -v expect)" ]; then
-  echo "Instalando expect para configurar MariaDB..."
-  dnf -y install expect
   SECURE_MYSQL=$(expect -c "
-set timeout 5
+set timeout 10
 spawn mysql_secure_installation
-expect \"Enter current password for root (enter for none):\"
+expect \"Enter current password for root*\"
 send \"\r\"
-expect \"Switch to unix_socket authentication\"
+expect \"Switch to unix_socket*\"
 send \"n\r\"
 expect \"Set root password?\"
 send \"y\r\"
@@ -64,57 +69,70 @@ expect \"Remove anonymous users?\"
 send \"y\r\"
 expect \"Disallow root login remotely?\"
 send \"y\r\"
-expect \"Remove test database and access to it?\"
+expect \"Remove test database*\"
 send \"y\r\"
-expect \"Reload privilege tables now?\"
+expect \"Reload privilege tables*\"
 send \"y\r\"
 expect eof
 ")
   echo "$SECURE_MYSQL"
-else
-  echo "No se encontró 'expect'. Configura manualmente con 'mysql_secure_installation' si es necesario."
 fi
 
-# B) Crear base de datos y usuario Observium
-echo "Creando base de datos y usuario para Observium..."
+# B) Crear la base de datos y usuario de Observium
+echo "Creando base de datos [$OBS_DB_NAME] y usuario [$OBS_DB_USER]..."
 mysql -u root -p"$DB_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS $OBS_DB_NAME CHARACTER SET utf8 COLLATE utf8_general_ci;"
 mysql -u root -p"$DB_ROOT_PASS" -e "CREATE USER IF NOT EXISTS '$OBS_DB_USER'@'localhost' IDENTIFIED BY '$OBS_DB_PASS';"
 mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON $OBS_DB_NAME.* TO '$OBS_DB_USER'@'localhost';"
 mysql -u root -p"$DB_ROOT_PASS" -e "FLUSH PRIVILEGES;"
 
-# ==================================================
-#    3. INSTALAR OBSERVIUM COMMUNITY
-# ==================================================
-echo "Descargando Observium Community en $INSTALL_DIR..."
-if [ ! -d "$INSTALL_DIR" ]; then
-    git clone https://github.com/observium/observium-community.git "$INSTALL_DIR"
+# ========================
+#   3) DESCARGAR OBSERVIUM
+# ========================
+echo "3) Descargando Observium Community .tar.gz..."
+mkdir -p "$INSTALL_DIR"
+cd /opt
+
+# Bajamos el tar y extraemos
+wget -O observium-latest.tar.gz "$OBS_TGZ_URL"
+tar xvfz observium-latest.tar.gz
+
+# Normalmente se extrae en "observium" o "observium-community"; ajustamos si es distinto
+# Si ya trae la carpeta "observium", podemos renombrarla:
+if [ -d "observium" ]; then
+  mv observium "$INSTALL_DIR"
+else
+  # Si la carpeta se llama "observium-community", etc.
+  mv observium-community "$INSTALL_DIR" 2>/dev/null || true
 fi
 
 cd "$INSTALL_DIR"
 
-echo "Copiando y editando archivo de configuración..."
+# ========================
+#    4) CONFIGURAR OBSERVIUM
+# ========================
+echo "Copiando config.php y editando..."
 cp config.php.default config.php
+
+# Editamos las líneas de la DB en config.php
 sed -i "s|\$config\['db_host'\] = 'localhost';|\$config['db_host'] = 'localhost';|g" config.php
 sed -i "s|\$config\['db_user'\] = 'observium';|\$config['db_user'] = '$OBS_DB_USER';|g" config.php
 sed -i "s|\$config\['db_pass'\] = 'observium';|\$config['db_pass'] = '$OBS_DB_PASS';|g" config.php
 sed -i "s|\$config\['db_name'\] = 'observium';|\$config['db_name'] = '$OBS_DB_NAME';|g" config.php
 
-# Ajustar timezone PHP para Observium
 echo "\$config['php_timezone'] = '$PHP_TIMEZONE';" >> config.php
 
-echo "Inicializando la base de datos de Observium..."
-./discovery.php -u
-./discovery.php -h all
-./validate.php || true  # Si hay warnings, no queremos abortar el script
+echo "Inicializando la base de datos Observium..."
+./discovery.php -u || true
+./discovery.php -h all || true
+./validate.php || true
 
-echo "Creando usuario administrador en Observium..."
-# Nivel 10 = admin
+echo "Creando usuario admin [$OBS_ADMIN_USER]..."
 ./adduser.php $OBS_ADMIN_USER $OBS_ADMIN_PASS 10
 
-# ==================================================
-#    4. CONFIGURAR APACHE
-# ==================================================
-echo "Configurando VirtualHost en Apache..."
+# ========================
+#    5) APACHE + SELINUX
+# ========================
+echo "Configurando VirtualHost de Apache..."
 cat <<EOF > /etc/httpd/conf.d/observium.conf
 <VirtualHost *:80>
   DocumentRoot $INSTALL_DIR/html/
@@ -130,29 +148,27 @@ cat <<EOF > /etc/httpd/conf.d/observium.conf
 </VirtualHost>
 EOF
 
-# Ajustes de permisos
+echo "Ajustando permisos y SELinux..."
 chown -R apache:apache "$INSTALL_DIR"
 
-# SELinux (si está habilitado)
 if sestatus | grep -q "enforcing"; then
-  echo "Ajustando contexto SELinux..."
   dnf -y install policycoreutils-python-utils || true
   semanage fcontext -a -t httpd_sys_rw_content_t "$INSTALL_DIR(/.*)?"
   restorecon -RF "$INSTALL_DIR"
 fi
 
-# Reiniciar Apache
 systemctl restart httpd
 
-# ==================================================
-#    5. MENSAJE FINAL
-# ==================================================
-echo "----------------------------------------"
-echo "¡Instalación de Observium completada!"
-echo "URL de acceso:  http://$SERVER_NAME/"
-echo "Usuario admin:  $OBS_ADMIN_USER"
-echo "Contraseña:     $OBS_ADMIN_PASS"
-echo "Base de datos:  $OBS_DB_NAME  (user: $OBS_DB_USER)"
-echo "----------------------------------------"
-echo "Si tu SELinux está activo, revisa que no bloquee puertos."
-echo "¡Listo! Disfruta de tu Observium Community Edition."
+# ========================
+# 6) MENSAJE FINAL
+# ========================
+echo "---------------------------------------------------"
+echo " Observium Community se instaló en: $INSTALL_DIR"
+echo " Accede en: http://$SERVER_NAME/"
+echo " Usuario admin: $OBS_ADMIN_USER"
+echo " Contraseña:    $OBS_ADMIN_PASS"
+echo " Base de datos: $OBS_DB_NAME (Usuario: $OBS_DB_USER)"
+echo "---------------------------------------------------"
+echo "Si SELinux está habilitado, revisa que no bloquee."
+echo "¡Listo! Observium debería estar activo."
+
